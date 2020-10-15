@@ -119,7 +119,10 @@
 #define UART_TX_BUF_SIZE                256                                         /**< UART TX buffer size. */
 #define UART_RX_BUF_SIZE                256                                         /**< UART RX buffer size. */
 
-#define SAMPLE_BUFFER_LEN 100
+#define SAMPLE_BUFFER_DOTS 25
+#define CHANNEL 4
+#define SAMPLE_BUFFER_LEN SAMPLE_BUFFER_DOTS*CHANNEL
+#define HC 10 																																			/**< 稳态时的缓冲数据长度. */
 
 BLE_NUS_DEF(m_nus, NRF_SDH_BLE_TOTAL_LINK_COUNT);                                   /**< BLE NUS service instance. */
 NRF_BLE_GATT_DEF(m_gatt);                                                           /**< GATT module instance. */
@@ -166,6 +169,8 @@ nrfx_wdt_channel_id my_channel_id;
 APP_TIMER_DEF(wdt_timer_speed);
 // 保存数据指针用于TX事件
 uint8_t * adc_tx_data;
+uint16_t ave_data[HC][CHANNEL]; //稳态数据保存
+uint16_t hc_num=0;
 uint16_t length;
 
 
@@ -273,17 +278,17 @@ static void nus_data_handler(ble_nus_evt_t * p_evt)
     }
 		else if (p_evt->type == BLE_NUS_EVT_COMM_STARTED)
 		{
-			//APP_ERROR_CHECK(app_timer_start(m_timer_speed, APP_TIMER_TICKS(30),NULL));			//设置APP_TIMER定时间隔
 			//使能PPI通道
 			nrfx_timer_enable(&MY_TIMER);
 			APP_ERROR_CHECK(nrfx_ppi_channel_enable(my_ppi_channel));		
+			hc_num=0;
 		}
 		else if (p_evt->type == BLE_NUS_EVT_COMM_STOPPED)
 		{
-			//APP_ERROR_CHECK(app_timer_stop(m_timer_speed));			//停止APP_TIMER定时间隔
 			//关闭PPI通道
 			APP_ERROR_CHECK(nrfx_ppi_channel_disable(my_ppi_channel));
 			nrfx_timer_disable(&MY_TIMER);
+			hc_num=0;
 		}
 		else if (p_evt->type == BLE_NUS_EVT_TX_RDY)
 		{
@@ -470,9 +475,7 @@ static void ble_evt_handler(ble_evt_t const * p_ble_evt, void * p_context)
 						nrfx_timer_disable(&MY_TIMER);
 						m_adc_evt_counter=0;
 						m_adv_success_send=0;
-//						APP_ERROR_CHECK(app_timer_stop(m_timer_speed));	
-//						m_len_sent = 0;
-//						m_cnt_7ms = 0;
+						hc_num=0;
             break;
 
         case BLE_GAP_EVT_PHY_UPDATE_REQUEST:
@@ -967,7 +970,7 @@ void timer_config()
 {
 	uint32_t err_code=NRF_SUCCESS;
 	//uint32_t time_ms=1;
-	uint32_t time_us=500000;
+	uint32_t time_us=1000;
 	uint32_t ticks;
 
 	nrfx_timer_config_t my_timer_config = NRFX_TIMER_DEFAULT_CONFIG; // 先使用默认配置，然后更改
@@ -981,6 +984,30 @@ void timer_config()
 	
 	//nrfx_timer_enable(&MY_TIMER);
 }
+
+void average(uint16_t* buffer)
+{
+	ave_data[hc_num][0] =0;
+	ave_data[hc_num][1] =0;
+	ave_data[hc_num][2] =0;
+	ave_data[hc_num][3] =0;
+	for(int i=0;i<SAMPLE_BUFFER_DOTS;i++)
+	{
+		ave_data[hc_num][0] += buffer[i*4];
+		ave_data[hc_num][1] += buffer[i*4+1];
+		ave_data[hc_num][2] += buffer[i*4+2];
+		ave_data[hc_num][3] += buffer[i*4+3];
+	}
+	ave_data[hc_num][0] =ave_data[hc_num][0]/SAMPLE_BUFFER_DOTS;
+	ave_data[hc_num][1] =ave_data[hc_num][1]/SAMPLE_BUFFER_DOTS;
+	ave_data[hc_num][2] =ave_data[hc_num][2]/SAMPLE_BUFFER_DOTS;
+	ave_data[hc_num][3] =ave_data[hc_num][3]/SAMPLE_BUFFER_DOTS;
+	if(hc_num < HC)
+		hc_num++;
+	else
+		hc_num=0;
+}
+
 void saadc_callback(nrf_drv_saadc_evt_t const * p_event)
 {
 	ret_code_t err_code=NRF_SUCCESS;
@@ -991,31 +1018,31 @@ void saadc_callback(nrf_drv_saadc_evt_t const * p_event)
 		APP_ERROR_CHECK(nrfx_saadc_buffer_convert(p_event->data.done.p_buffer,SAMPLE_BUFFER_LEN));
 		
 		//NRF_LOG_INFO("SAADC");
-		m_adc_evt_counter++;
-		adc_tx_data=(uint8_t*)p_event->data.done.p_buffer;
-		length=MIN(m_ble_nus_max_data_len,SAMPLE_BUFFER_LEN*2);
-//		printf("ADC EVENT NUMBER:%d\r\n",(int)m_adc_evt_counter);
-//		NRF_LOG_INFO("%d %d %d %d %d",(int)m_adc_evt_counter,p_event->data.done.p_buffer[0],p_event->data.done.p_buffer[5],p_event->data.done.p_buffer[10],p_event->data.done.p_buffer[15]);
-		err_code = ble_nus_data_send(&m_nus, adc_tx_data, &length, m_conn_handle);
-		if ( (err_code != NRF_ERROR_INVALID_STATE) && (err_code != NRF_ERROR_RESOURCES) &&
+		average((uint16_t*)p_event->data.done.p_buffer);
+		if(hc_num==0){
+			m_adc_evt_counter++;
+			length=MIN(m_ble_nus_max_data_len,HC*CHANNEL*2);
+			err_code = ble_nus_data_send(&m_nus, (uint8_t*)ave_data, &length, m_conn_handle);
+			if ( (err_code != NRF_ERROR_INVALID_STATE) && (err_code != NRF_ERROR_RESOURCES) &&
 				 (err_code != NRF_ERROR_NOT_FOUND) )
-		{
-				APP_ERROR_CHECK(err_code);
-		}
-		if (err_code == NRF_SUCCESS)
-		{
-			NRF_LOG_INFO("%d:SUCCESS",m_adc_evt_counter);
-			m_adv_success_send++;
-		}
-		else
-		{
-			NRF_LOG_INFO("%d:DROP",m_adc_evt_counter);
-		}
-		if(m_adc_evt_counter==100)
-		{
-			NRF_LOG_INFO("RATE: %d/%d",m_adv_success_send,m_adc_evt_counter);
-			m_adv_success_send=0;
-			m_adc_evt_counter=0;
+			{
+					APP_ERROR_CHECK(err_code);
+			}
+			if (err_code == NRF_SUCCESS)
+			{
+				NRF_LOG_INFO("%d:SUCCESS",m_adc_evt_counter);
+				m_adv_success_send++;
+			}
+			else
+			{
+				NRF_LOG_INFO("%d:DROP",m_adc_evt_counter);
+			}
+			if(m_adc_evt_counter==80)
+			{
+				NRF_LOG_INFO("RATE: %d/%d",m_adv_success_send,m_adc_evt_counter);
+				m_adv_success_send=0;
+				m_adc_evt_counter=0;
+			}
 		}
 	}
 }
@@ -1025,10 +1052,10 @@ void adc_config()
 	ret_code_t err_code=NRF_SUCCESS;
 	
 	//ADC通道配置结构体
-	nrf_saadc_channel_config_t channel_config = NRFX_SAADC_DEFAULT_CHANNEL_CONFIG_DIFFERENTIAL(NRF_SAADC_INPUT_VDD,NRF_SAADC_INPUT_AIN2);
-	nrf_saadc_channel_config_t channel_config2 = NRFX_SAADC_DEFAULT_CHANNEL_CONFIG_DIFFERENTIAL(NRF_SAADC_INPUT_AIN1,NRF_SAADC_INPUT_AIN3);
+	nrf_saadc_channel_config_t channel_config = NRFX_SAADC_DEFAULT_CHANNEL_CONFIG_DIFFERENTIAL(NRF_SAADC_INPUT_AIN0,NRF_SAADC_INPUT_AIN1);
+	nrf_saadc_channel_config_t channel_config2 = NRFX_SAADC_DEFAULT_CHANNEL_CONFIG_DIFFERENTIAL(NRF_SAADC_INPUT_AIN3,NRF_SAADC_INPUT_AIN2);
 	nrf_saadc_channel_config_t channel_config3 = NRFX_SAADC_DEFAULT_CHANNEL_CONFIG_DIFFERENTIAL(NRF_SAADC_INPUT_AIN4,NRF_SAADC_INPUT_AIN5);
-	nrf_saadc_channel_config_t channel_config4 = NRFX_SAADC_DEFAULT_CHANNEL_CONFIG_DIFFERENTIAL(NRF_SAADC_INPUT_AIN6,NRF_SAADC_INPUT_AIN7);
+	nrf_saadc_channel_config_t channel_config4 = NRFX_SAADC_DEFAULT_CHANNEL_CONFIG_DIFFERENTIAL(NRF_SAADC_INPUT_AIN7,NRF_SAADC_INPUT_AIN6);
 	//初始化SAADC，注册事件回调函数 
 	err_code=nrf_drv_saadc_init(NULL,saadc_callback);
 	APP_ERROR_CHECK(err_code);
