@@ -82,6 +82,9 @@
 //看门狗需要引用的头文件
 #include "nrfx_wdt.h"
 #include "nrf_drv_clock.h"
+//平方根
+#include "math.h"
+
 
 #if defined (UART_PRESENT)
 #include "nrf_uart.h"
@@ -106,8 +109,8 @@
 
 #define APP_ADV_DURATION                18000                                       /**< The advertising duration (180 seconds) in units of 10 milliseconds. */
 
-#define MIN_CONN_INTERVAL               MSEC_TO_UNITS(100, UNIT_1_25_MS)             /**< Minimum acceptable connection interval (20 ms), Connection interval uses 1.25 ms units. */
-#define MAX_CONN_INTERVAL               MSEC_TO_UNITS(200, UNIT_1_25_MS)             /**< Maximum acceptable connection interval (75 ms), Connection interval uses 1.25 ms units. */
+#define MIN_CONN_INTERVAL               MSEC_TO_UNITS(20, UNIT_1_25_MS)             /**< Minimum acceptable connection interval (20 ms), Connection interval uses 1.25 ms units. */
+#define MAX_CONN_INTERVAL               MSEC_TO_UNITS(40, UNIT_1_25_MS)             /**< Maximum acceptable connection interval (75 ms), Connection interval uses 1.25 ms units. */
 #define SLAVE_LATENCY                   0                                           /**< Slave latency. */
 #define CONN_SUP_TIMEOUT                MSEC_TO_UNITS(4000, UNIT_10_MS)             /**< Connection supervisory timeout (4 seconds), Supervision Timeout uses 10 ms units. */
 #define FIRST_CONN_PARAMS_UPDATE_DELAY  APP_TIMER_TICKS(5000)                       /**< Time from initiating event (connect or start of notification) to first time sd_ble_gap_conn_param_update is called (5 seconds). */
@@ -119,10 +122,10 @@
 #define UART_TX_BUF_SIZE                256                                         /**< UART TX buffer size. */
 #define UART_RX_BUF_SIZE                256                                         /**< UART RX buffer size. */
 
-#define SAMPLE_BUFFER_DOTS 25
+#define SAMPLE_BUFFER_DOTS 20
 #define CHANNEL 4
 #define SAMPLE_BUFFER_LEN SAMPLE_BUFFER_DOTS*CHANNEL
-#define HC 10 																																			/**< 稳态时的缓冲数据长度. */
+#define HC 5 																																			/**< 稳态时的缓冲数据长度. */
 
 BLE_NUS_DEF(m_nus, NRF_SDH_BLE_TOTAL_LINK_COUNT);                                   /**< BLE NUS service instance. */
 NRF_BLE_GATT_DEF(m_gatt);                                                           /**< GATT module instance. */
@@ -970,7 +973,7 @@ void timer_config()
 {
 	uint32_t err_code=NRF_SUCCESS;
 	//uint32_t time_ms=1;
-	uint32_t time_us=1000;
+	uint32_t time_us=500;
 	uint32_t ticks;
 
 	nrfx_timer_config_t my_timer_config = NRFX_TIMER_DEFAULT_CONFIG; // 先使用默认配置，然后更改
@@ -985,23 +988,63 @@ void timer_config()
 	//nrfx_timer_enable(&MY_TIMER);
 }
 
-void average(uint16_t* buffer)
+void ave(uint16_t* buffer)
 {
-	ave_data[hc_num][0] =0;
-	ave_data[hc_num][1] =0;
-	ave_data[hc_num][2] =0;
-	ave_data[hc_num][3] =0;
+	uint32_t tmp1=0;
+	uint32_t tmp2=0;
+	uint32_t tmp3=0;
+	uint32_t tmp4=0;
 	for(int i=0;i<SAMPLE_BUFFER_DOTS;i++)
 	{
-		ave_data[hc_num][0] += buffer[i*4];
-		ave_data[hc_num][1] += buffer[i*4+1];
-		ave_data[hc_num][2] += buffer[i*4+2];
-		ave_data[hc_num][3] += buffer[i*4+3];
+		tmp1 += buffer[i*4];
+		tmp2 += buffer[i*4+1];
+		tmp3 += buffer[i*4+2];
+		tmp4 += buffer[i*4+3];
 	}
-	ave_data[hc_num][0] =ave_data[hc_num][0]/SAMPLE_BUFFER_DOTS;
-	ave_data[hc_num][1] =ave_data[hc_num][1]/SAMPLE_BUFFER_DOTS;
-	ave_data[hc_num][2] =ave_data[hc_num][2]/SAMPLE_BUFFER_DOTS;
-	ave_data[hc_num][3] =ave_data[hc_num][3]/SAMPLE_BUFFER_DOTS;
+	ave_data[hc_num][0] =tmp1/SAMPLE_BUFFER_DOTS;
+	ave_data[hc_num][1] =tmp2/SAMPLE_BUFFER_DOTS;
+	ave_data[hc_num][2] =tmp3/SAMPLE_BUFFER_DOTS;
+	ave_data[hc_num][3] =tmp4/SAMPLE_BUFFER_DOTS;
+	if(hc_num < HC)
+		hc_num++;
+	else
+		hc_num=0;
+}
+
+void rms(uint16_t* buffer)
+{
+	uint32_t tmp1=0;
+	uint32_t tmp2=0;
+	uint32_t tmp3=0;
+	uint32_t tmp4=0;
+	for(int i=0;i<SAMPLE_BUFFER_DOTS;i++)
+	{
+		tmp1 += ((uint32_t)buffer[i*4])*((uint32_t)buffer[i*4]);
+		tmp2 += ((uint32_t)buffer[i*4+1])*((uint32_t)buffer[i*4+1]);
+		tmp3 += ((uint32_t)buffer[i*4+2])*((uint32_t)buffer[i*4+2]);
+		tmp4 += ((uint32_t)buffer[i*4+3])*((uint32_t)buffer[i*4+3]);
+	}
+	// 或者直接取平方均值的9-24位（4096=2^12）(计算得500以下的有效值也才相差0.2)
+	tmp1 = tmp1/SAMPLE_BUFFER_DOTS;
+	tmp1 = tmp1>>8;
+	tmp2 = tmp2/SAMPLE_BUFFER_DOTS;
+	tmp2 = tmp2>>8;
+	tmp3 = tmp3/SAMPLE_BUFFER_DOTS;
+	tmp3 = tmp3>>8;
+	tmp4 = tmp4/SAMPLE_BUFFER_DOTS;
+	tmp4 = tmp4>>8;
+	ave_data[hc_num][0] =(uint16_t)tmp1;
+	ave_data[hc_num][1] =(uint16_t)tmp2;
+	ave_data[hc_num][2] =(uint16_t)tmp3;
+	ave_data[hc_num][3] =(uint16_t)tmp4;
+//	double temp1 =tmp1/SAMPLE_BUFFER_DOTS;
+//	double temp2 =tmp2/SAMPLE_BUFFER_DOTS;
+//	double temp3 =tmp3/SAMPLE_BUFFER_DOTS;
+//	double temp4 =tmp4/SAMPLE_BUFFER_DOTS;
+//	ave_data[hc_num][0] =(uint16_t)((int)(sqrt(temp1)));
+//	ave_data[hc_num][1] =(uint16_t)((int)(sqrt(temp2)));
+//	ave_data[hc_num][2] =(uint16_t)((int)(sqrt(temp3)));
+//	ave_data[hc_num][3] =(uint16_t)((int)(sqrt(temp4)));
 	if(hc_num < HC)
 		hc_num++;
 	else
@@ -1018,7 +1061,8 @@ void saadc_callback(nrf_drv_saadc_evt_t const * p_event)
 		APP_ERROR_CHECK(nrfx_saadc_buffer_convert(p_event->data.done.p_buffer,SAMPLE_BUFFER_LEN));
 		
 		//NRF_LOG_INFO("SAADC");
-		average((uint16_t*)p_event->data.done.p_buffer);
+		//ave((uint16_t*)p_event->data.done.p_buffer); 直流磁场API
+		rms((uint16_t*)p_event->data.done.p_buffer);
 		if(hc_num==0){
 			m_adc_evt_counter++;
 			length=MIN(m_ble_nus_max_data_len,HC*CHANNEL*2);
@@ -1094,6 +1138,7 @@ void ppi_config()
 	//设置通道的TEP和EEP
 	err_code = nrfx_ppi_channel_assign(my_ppi_channel,nrfx_timer_compare_event_address_get(&MY_TIMER,NRF_TIMER_CC_CHANNEL0),nrfx_saadc_sample_task_get());
 	APP_ERROR_CHECK(err_code);
+	
 	
 	//设置次级任务端点
 	//err_code = nrfx_ppi_channel_fork_assign(my_ppi_channel,nrfx_gpiote_out_task_addr_get(LED_4));
