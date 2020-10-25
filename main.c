@@ -68,6 +68,7 @@
 #include "app_util_platform.h"
 #include "bsp_btn_ble.h"
 #include "nrf_pwr_mgmt.h"
+#include "nrf_delay.h"
 
 //ADC需要引用的头文件
 #include "nrf_drv_saadc.h"
@@ -105,9 +106,11 @@
 
 #define APP_BLE_OBSERVER_PRIO           3                                           /**< Application's BLE observer priority. You shouldn't need to modify this value. */
 
-#define APP_ADV_INTERVAL                64                                          /**< The advertising interval (in units of 0.625 ms. This value corresponds to 40 ms). */
+#define APP_ADV_FAST_INTERVAL           64                                          /**< The advertising interval (in units of 0.625 ms. This value corresponds to 40 ms). */
+#define APP_ADV_SLOW_INTERVAL           6400                                        /**< The advertising interval (in units of 0.625 ms. This value corresponds to 4s). */
 
-#define APP_ADV_DURATION                18000                                       /**< The advertising duration (180 seconds) in units of 10 milliseconds. */
+#define APP_ADV_FAST_DURATION           2000                                        /**< The advertising duration (20 seconds) in units of 10 milliseconds. */
+#define APP_ADV_SLOW_DURATION           0                                           /**< The advertising duration (WQ seconds) in units of 10 milliseconds. */
 
 #define MIN_CONN_INTERVAL               MSEC_TO_UNITS(20, UNIT_1_25_MS)             /**< Minimum acceptable connection interval (20 ms), Connection interval uses 1.25 ms units. */
 #define MAX_CONN_INTERVAL               MSEC_TO_UNITS(40, UNIT_1_25_MS)             /**< Maximum acceptable connection interval (75 ms), Connection interval uses 1.25 ms units. */
@@ -127,6 +130,9 @@
 #define SAMPLE_BUFFER_LEN SAMPLE_BUFFER_DOTS*CHANNEL
 #define HC 5 																																			/**< 稳态时的缓冲数据长度. */
 
+#define TPL5010_WAKE 24
+#define TPL5010_DONE 14
+
 BLE_NUS_DEF(m_nus, NRF_SDH_BLE_TOTAL_LINK_COUNT);                                   /**< BLE NUS service instance. */
 NRF_BLE_GATT_DEF(m_gatt);                                                           /**< GATT module instance. */
 NRF_BLE_QWR_DEF(m_qwr);                                                             /**< Context for the Queued Write module.*/
@@ -138,24 +144,6 @@ static ble_uuid_t m_adv_uuids[]          =                                      
 {
     {BLE_UUID_NUS_SERVICE, NUS_SERVICE_UUID_TYPE}
 };
-
-/**
-** custom code
-**/
-
-//#define APP_QUEUE
-//void ble_data_send_with_queue(void);
-//typedef struct {
-//    uint8_t * p_data;
-//    uint16_t length;
-//} buffer_t;
-
-//NRF_QUEUE_DEF(buffer_t, m_buf_queue, 30, NRF_QUEUE_MODE_NO_OVERFLOW);
-
-//APP_TIMER_DEF(m_timer_speed);
-//uint8_t m_data_array[6300];
-//uint32_t m_len_sent;
-//uint32_t m_cnt_7ms;
 
 // 保存应用程序向驱动程序申请的PPI通道编号
 nrf_ppi_channel_t my_ppi_channel;
@@ -170,11 +158,17 @@ const nrfx_timer_t MY_TIMER = NRFX_TIMER_INSTANCE(2);
 // 保存申请的喂狗通道
 nrfx_wdt_channel_id my_channel_id;
 APP_TIMER_DEF(wdt_timer_speed);
+//APP_TIMER_DEF(advertising_timer);
 // 保存数据指针用于TX事件
 uint8_t * adc_tx_data;
 uint16_t ave_data[HC][CHANNEL]; //稳态数据保存
 uint16_t hc_num=0;
 uint16_t length;
+// 保存传感器设置的状态
+bool sensor_state = false;
+
+void sensor_init();
+void sensor_uninit();
 
 
 /**@brief Function for assert macro callback.
@@ -257,27 +251,27 @@ static void nus_data_handler(ble_nus_evt_t * p_evt)
 
     if (p_evt->type == BLE_NUS_EVT_RX_DATA)
     {
-        uint32_t err_code;
+//        uint32_t err_code;
 
-        NRF_LOG_DEBUG("Received data from BLE NUS. Writing data on UART.");
-        NRF_LOG_HEXDUMP_DEBUG(p_evt->params.rx_data.p_data, p_evt->params.rx_data.length);
+//        NRF_LOG_DEBUG("Received data from BLE NUS. Writing data on UART.");
+//        NRF_LOG_HEXDUMP_DEBUG(p_evt->params.rx_data.p_data, p_evt->params.rx_data.length);
 
-        for (uint32_t i = 0; i < p_evt->params.rx_data.length; i++)
-        {
-            do
-            {
-                err_code = app_uart_put(p_evt->params.rx_data.p_data[i]);
-                if ((err_code != NRF_SUCCESS) && (err_code != NRF_ERROR_BUSY))
-                {
-                    NRF_LOG_ERROR("Failed receiving NUS message. Error 0x%x. ", err_code);
-                    APP_ERROR_CHECK(err_code);
-                }
-            } while (err_code == NRF_ERROR_BUSY);
-        }
-        if (p_evt->params.rx_data.p_data[p_evt->params.rx_data.length - 1] == '\r')
-        {
-            while (app_uart_put('\n') == NRF_ERROR_BUSY);
-        }
+//        for (uint32_t i = 0; i < p_evt->params.rx_data.length; i++)
+//        {
+//            do
+//            {
+//                err_code = app_uart_put(p_evt->params.rx_data.p_data[i]);
+//                if ((err_code != NRF_SUCCESS) && (err_code != NRF_ERROR_BUSY))
+//                {
+//                    NRF_LOG_ERROR("Failed receiving NUS message. Error 0x%x. ", err_code);
+//                    APP_ERROR_CHECK(err_code);
+//                }
+//            } while (err_code == NRF_ERROR_BUSY);
+//        }
+//        if (p_evt->params.rx_data.p_data[p_evt->params.rx_data.length - 1] == '\r')
+//        {
+//            while (app_uart_put('\n') == NRF_ERROR_BUSY);
+//        }
     }
 		else if (p_evt->type == BLE_NUS_EVT_COMM_STARTED)
 		{
@@ -437,9 +431,13 @@ static void on_adv_evt(ble_adv_evt_t ble_adv_evt)
     switch (ble_adv_evt)
     {
         case BLE_ADV_EVT_FAST:
+						NRF_LOG_INFO("FAST MODE");
             err_code = bsp_indication_set(BSP_INDICATE_ADVERTISING);
             APP_ERROR_CHECK(err_code);
             break;
+				case BLE_ADV_EVT_SLOW:
+						NRF_LOG_INFO("SLOW MODE");
+						break;
         case BLE_ADV_EVT_IDLE:
             sleep_mode_enter();
             break;
@@ -467,18 +465,22 @@ static void ble_evt_handler(ble_evt_t const * p_ble_evt, void * p_context)
             m_conn_handle = p_ble_evt->evt.gap_evt.conn_handle;
             err_code = nrf_ble_qwr_conn_handle_assign(&m_qwr, m_conn_handle);
             APP_ERROR_CHECK(err_code);
+						//启动传感器设置
+						sensor_init();
             break;
 
         case BLE_GAP_EVT_DISCONNECTED:
             NRF_LOG_INFO("Disconnected");
             // LED indication will be changed when advertising starts.
             m_conn_handle = BLE_CONN_HANDLE_INVALID;
-						//关闭PPI通道
+						
+						//关闭所有传感器设置
 						APP_ERROR_CHECK(nrfx_ppi_channel_disable(my_ppi_channel));
 						nrfx_timer_disable(&MY_TIMER);
 						m_adc_evt_counter=0;
 						m_adv_success_send=0;
 						hc_num=0;
+						sensor_uninit();
             break;
 
         case BLE_GAP_EVT_PHY_UPDATE_REQUEST:
@@ -585,128 +587,36 @@ void gatt_init(void)
  */
 void bsp_event_handler(bsp_event_t event)
 {
-    uint32_t err_code;
+//    uint32_t err_code;
     switch (event)
     {
-        case BSP_EVENT_SLEEP:
-            sleep_mode_enter();
-            break;
+//        case BSP_EVENT_SLEEP:
+//            sleep_mode_enter();
+//            break;
 
-        case BSP_EVENT_DISCONNECT:
-            err_code = sd_ble_gap_disconnect(m_conn_handle, BLE_HCI_REMOTE_USER_TERMINATED_CONNECTION);
-            if (err_code != NRF_ERROR_INVALID_STATE)
-            {
-                APP_ERROR_CHECK(err_code);
-            }
-            break;
+//        case BSP_EVENT_DISCONNECT:
+//            err_code = sd_ble_gap_disconnect(m_conn_handle, BLE_HCI_REMOTE_USER_TERMINATED_CONNECTION);
+//            if (err_code != NRF_ERROR_INVALID_STATE)
+//            {
+//                APP_ERROR_CHECK(err_code);
+//            }
+//            break;
 
-        case BSP_EVENT_WHITELIST_OFF:
-            if (m_conn_handle == BLE_CONN_HANDLE_INVALID)
-            {
-                err_code = ble_advertising_restart_without_whitelist(&m_advertising);
-                if (err_code != NRF_ERROR_INVALID_STATE)
-                {
-                    APP_ERROR_CHECK(err_code);
-                }
-            }
-            break;
-
-        default:
-            break;
-    }
-}
-
-
-/**@brief   Function for handling app_uart events.
- *
- * @details This function will receive a single character from the app_uart module and append it to
- *          a string. The string will be be sent over BLE when the last character received was a
- *          'new line' '\n' (hex 0x0A) or if the string has reached the maximum data length.
- */
-/**@snippet [Handling the data received over UART] */
-void uart_event_handle(app_uart_evt_t * p_event)
-{
-    static uint8_t data_array[BLE_NUS_MAX_DATA_LEN];
-    static uint8_t index = 0;
-    uint32_t       err_code;
-
-    switch (p_event->evt_type)
-    {
-        case APP_UART_DATA_READY:
-            UNUSED_VARIABLE(app_uart_get(&data_array[index]));
-            index++;
-
-            if ((data_array[index - 1] == '\n') ||
-                (data_array[index - 1] == '\r') ||
-                (index >= m_ble_nus_max_data_len))
-            {
-                if (index > 1)
-                {
-                    NRF_LOG_DEBUG("Ready to send data over BLE NUS");
-                    NRF_LOG_HEXDUMP_DEBUG(data_array, index);
-
-                    do
-                    {
-                        uint16_t length = (uint16_t)index;
-                        err_code = ble_nus_data_send(&m_nus, data_array, &length, m_conn_handle);
-                        if ((err_code != NRF_ERROR_INVALID_STATE) &&
-                            (err_code != NRF_ERROR_RESOURCES) &&
-                            (err_code != NRF_ERROR_NOT_FOUND))
-                        {
-                            APP_ERROR_CHECK(err_code);
-                        }
-                    } while (err_code == NRF_ERROR_RESOURCES);
-                }
-
-                index = 0;
-            }
-            break;
-
-        case APP_UART_COMMUNICATION_ERROR:
-            APP_ERROR_HANDLER(p_event->data.error_communication);
-            break;
-
-        case APP_UART_FIFO_ERROR:
-            APP_ERROR_HANDLER(p_event->data.error_code);
-            break;
+//        case BSP_EVENT_WHITELIST_OFF:
+//            if (m_conn_handle == BLE_CONN_HANDLE_INVALID)
+//            {
+//                err_code = ble_advertising_restart_without_whitelist(&m_advertising);
+//                if (err_code != NRF_ERROR_INVALID_STATE)
+//                {
+//                    APP_ERROR_CHECK(err_code);
+//                }
+//            }
+//            break;
 
         default:
             break;
     }
 }
-/**@snippet [Handling the data received over UART] */
-
-
-/**@brief  Function for initializing the UART module.
- */
-/**@snippet [UART Initialization] */
-static void uart_init(void)
-{
-    uint32_t                     err_code;
-    app_uart_comm_params_t const comm_params =
-    {
-        .rx_pin_no    = RX_PIN_NUMBER,
-        .tx_pin_no    = TX_PIN_NUMBER,
-        .rts_pin_no   = RTS_PIN_NUMBER,
-        .cts_pin_no   = CTS_PIN_NUMBER,
-        .flow_control = APP_UART_FLOW_CONTROL_DISABLED,
-        .use_parity   = false,
-#if defined (UART_PRESENT)
-        .baud_rate    = NRF_UART_BAUDRATE_115200
-#else
-        .baud_rate    = NRF_UARTE_BAUDRATE_115200
-#endif
-    };
-
-    APP_UART_FIFO_INIT(&comm_params,
-                       UART_RX_BUF_SIZE,
-                       UART_TX_BUF_SIZE,
-                       uart_event_handle,
-                       APP_IRQ_PRIORITY_LOWEST,
-                       err_code);
-    APP_ERROR_CHECK(err_code);
-}
-/**@snippet [UART Initialization] */
 
 
 /**@brief Function for initializing the Advertising functionality.
@@ -720,14 +630,17 @@ static void advertising_init(void)
 
     init.advdata.name_type          = BLE_ADVDATA_FULL_NAME;
     init.advdata.include_appearance = false;
-    init.advdata.flags              = BLE_GAP_ADV_FLAGS_LE_ONLY_LIMITED_DISC_MODE;
+    init.advdata.flags              = BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE;
 
     init.srdata.uuids_complete.uuid_cnt = sizeof(m_adv_uuids) / sizeof(m_adv_uuids[0]);
     init.srdata.uuids_complete.p_uuids  = m_adv_uuids;
 
     init.config.ble_adv_fast_enabled  = true;
-    init.config.ble_adv_fast_interval = APP_ADV_INTERVAL;
-    init.config.ble_adv_fast_timeout  = APP_ADV_DURATION;
+    init.config.ble_adv_fast_interval = APP_ADV_FAST_INTERVAL;
+    init.config.ble_adv_fast_timeout  = APP_ADV_FAST_DURATION;
+		init.config.ble_adv_slow_enabled  = true;
+		init.config.ble_adv_slow_interval = APP_ADV_SLOW_INTERVAL;
+		init.config.ble_adv_slow_timeout	= APP_ADV_SLOW_DURATION;
     init.evt_handler = on_adv_evt;
 
     err_code = ble_advertising_init(&m_advertising, &init);
@@ -738,14 +651,15 @@ static void advertising_init(void)
 
 
 /**@brief Function for initializing buttons and leds.
- *
+ *3
  * @param[out] p_erase_bonds  Will be true if the clear bonding button was pressed to wake the application up.
  */
 static void buttons_leds_init(bool * p_erase_bonds)
 {
     bsp_event_t startup_event;
 
-    uint32_t err_code = bsp_init(BSP_INIT_LEDS | BSP_INIT_BUTTONS, bsp_event_handler);
+    //uint32_t err_code = bsp_init(BSP_INIT_LEDS | BSP_INIT_BUTTONS, bsp_event_handler);
+		uint32_t err_code = bsp_init(BSP_INIT_LEDS, bsp_event_handler);
     APP_ERROR_CHECK(err_code);
 
     err_code = bsp_btn_ble_init(NULL, &startup_event);
@@ -797,154 +711,12 @@ static void advertising_start(void)
     APP_ERROR_CHECK(err_code);
 }
 
-//buffer_t m_buf;
-//void ble_data_send_with_queue(void)
-//{
-//	uint32_t err_code;
-//	uint16_t length = 0;
-//	static bool retry = false;
-//	
-//	if (retry)
-//	{
-//		length = m_buf.length;
-//		err_code = ble_nus_data_send(&m_nus, m_buf.p_data, &length, m_conn_handle);
-//		//NRF_LOG_INFO("Data2: %d", m_buf.p_data[0]);
-//		if ( (err_code != NRF_ERROR_INVALID_STATE) && (err_code != NRF_ERROR_RESOURCES) &&
-//				 (err_code != NRF_ERROR_NOT_FOUND) )
-//		{
-//				APP_ERROR_CHECK(err_code);
-//		}
-//		if (err_code == NRF_SUCCESS)
-//		{
-//			m_len_sent += length;
-//			retry = false;
-//		}
-//	}
-//	
-//	while (!nrf_queue_is_empty(&m_buf_queue) && !retry)
-//	{		
-
-//		err_code = nrf_queue_pop(&m_buf_queue, &m_buf);
-//		APP_ERROR_CHECK(err_code);		
-//		length = m_buf.length;
-//					
-//		err_code = ble_nus_data_send(&m_nus, m_buf.p_data, &length, m_conn_handle);
-//		//NRF_LOG_INFO("Data: %d", m_buf.p_data[0]);
-//		if ( (err_code != NRF_ERROR_INVALID_STATE) && (err_code != NRF_ERROR_RESOURCES) &&
-//				 (err_code != NRF_ERROR_NOT_FOUND) )
-//		{
-//				APP_ERROR_CHECK(err_code);
-//		}
-//		if (err_code == NRF_SUCCESS)
-//		{
-//			m_len_sent += length;
-//			retry = false;
-//		}
-//		else
-//		{
-//			retry = true;
-//			break;
-//		}
-//	}			
-//}
-
-//static void throughput_timer_handler(void * p_context)
-//{
-//#ifndef APP_QUEUE	
-//	//the snippet used to test data throughput only. no queue is involved
-//	ret_code_t err_code;
-//	uint16_t length;
-//	m_cnt_7ms++;	
-//	//sending code lines
-//	length = m_ble_nus_max_data_len;	
-//	do
-//	{					
-//		err_code = ble_nus_data_send(&m_nus, m_data_array, &length, m_conn_handle);
-//		if ( (err_code != NRF_ERROR_INVALID_STATE) && (err_code != NRF_ERROR_RESOURCES) &&
-//				 (err_code != NRF_ERROR_NOT_FOUND) )
-//		{
-//				APP_ERROR_CHECK(err_code);
-//		}
-//		if (err_code == NRF_SUCCESS)
-//		{
-//			m_len_sent += length; 	
-//			m_data_array[0]++;
-//			m_data_array[length-1]++;	
-//		}
-//	} while (err_code == NRF_SUCCESS);
-
-//	//calculate speed every 1 second
-//	if (m_cnt_7ms == 143)
-//	{
-//		NRF_LOG_INFO("==**Speed: %d B/s**==", m_len_sent);
-//		m_cnt_7ms = 0;
-//		m_len_sent = 0;
-//		m_data_array[0] = 0;
-//		m_data_array[length-1] = 0;
-//	}	
-//	//NRF_LOG_INFO("PacketNo.: %d == Time: %d *7ms", m_data_array[0], m_cnt_7ms);	
-//#else
-//	//the snippet simulate a real application scenairo. Queue is involved.
-//	ret_code_t err_code1, err_code2;	
-//	buffer_t buf;
-//	static uint8_t val = 0;
-//	//produce the data irregard of BLE activity
-//	m_data_array[(m_cnt_7ms%10)*420] = val++;
-//	m_data_array[(m_cnt_7ms%10)*420+210] = val++;
-//	
-//	//put the data into a queue to cache them
-//	buf.p_data = &m_data_array[(m_cnt_7ms%10)*420];
-//	buf.length = MIN(m_ble_nus_max_data_len,210);
-//	err_code1 = nrf_queue_push(&m_buf_queue, &buf);
-//	//APP_ERROR_CHECK(err_code1); //it may return NRF_ERROR_NO_MEM. we skip this error
-//	
-//	buf.p_data = &m_data_array[(m_cnt_7ms%10)*420+210];
-//	buf.length = MIN(m_ble_nus_max_data_len,210);
-//	err_code2 = nrf_queue_push(&m_buf_queue, &buf);
-//	//APP_ERROR_CHECK(err_code2);	//it may return NRF_ERROR_NO_MEM. we skip this error
-//	
-//	ble_data_send_with_queue();
-//	
-//	if(err_code1 == NRF_ERROR_NO_MEM || err_code2 == NRF_ERROR_NO_MEM)
-//	{
-//		NRF_LOG_INFO("Drop");	
-//	}
-//	
-//	m_cnt_7ms++;	
-//	//calculate speed every 1 second
-//	if (m_cnt_7ms == 143)
-//	{
-//		NRF_LOG_INFO("==**Speed: %d B/s**==", m_len_sent);
-//		m_cnt_7ms = 0;
-//		m_len_sent = 0;
-//	}	
-//	//NRF_LOG_INFO("Time: %d *7ms", m_cnt_7ms);		
-//	
-//#endif	
-//}
-
-
-//void throughput_test()
-//{
-//	ret_code_t err_code;
-//	err_code = app_timer_create(&m_timer_speed, APP_TIMER_MODE_REPEATED, throughput_timer_handler);
-//	APP_ERROR_CHECK(err_code);
-
-//#if 0
-//	  ble_opt_t  opt;
-//    memset(&opt, 0x00, sizeof(opt));
-//    opt.common_opt.conn_evt_ext.enable = true;
-//    err_code = sd_ble_opt_set(BLE_COMMON_OPT_CONN_EVT_EXT, &opt);
-//    APP_ERROR_CHECK(err_code);
-//#endif	
-//	
-//}
-
 static void wdt_timer_handler(void * p_context)
 {
 	static uint8_t wdt_sec=0;
 	wdt_sec++;
 	nrfx_wdt_channel_feed(my_channel_id);
+	nrf_gpio_pin_toggle(TPL5010_DONE);
 	//NRF_LOG_INFO("FEED DOG:%d",wdt_sec);
 }
 
@@ -1074,16 +846,16 @@ void saadc_callback(nrf_drv_saadc_evt_t const * p_event)
 			}
 			if (err_code == NRF_SUCCESS)
 			{
-				NRF_LOG_INFO("%d:SUCCESS",m_adc_evt_counter);
+				//NRF_LOG_INFO("%d:SUCCESS",m_adc_evt_counter);
 				m_adv_success_send++;
 			}
 			else
 			{
-				NRF_LOG_INFO("%d:DROP",m_adc_evt_counter);
+				//NRF_LOG_INFO("%d:DROP",m_adc_evt_counter);
 			}
 			if(m_adc_evt_counter==80)
 			{
-				NRF_LOG_INFO("RATE: %d/%d",m_adv_success_send,m_adc_evt_counter);
+				//NRF_LOG_INFO("RATE: %d/%d",m_adv_success_send,m_adc_evt_counter);
 				m_adv_success_send=0;
 				m_adc_evt_counter=0;
 			}
@@ -1123,6 +895,13 @@ void adc_config()
 	
 }
 
+//void feed_tpl5010()
+//{
+//		nrf_gpio_pin_set(TPL5010_DONE);
+//		nrf_delay_ms(50);
+//		nrf_gpio_pin_clear(TPL5010_DONE);
+//}
+
 void ppi_config()
 {
 	uint32_t err_code=NRF_SUCCESS;
@@ -1148,7 +927,7 @@ void ppi_config()
 //	err_code = nrfx_ppi_channel_enable(my_ppi_channel);
 //	APP_ERROR_CHECK(err_code);
 	
-	//PPI是硬件活动，与中断/事件回调无关！不冲突！(GPIOTE会使得回调函数里对GPIOTE端口的GPIO操作失败)
+	//PPI是硬件活动，与中断/事件回调无关！不冲突！(GPIOTE会使得回调函数里对GPIOTE端口的GPIO操作失败,这是BUTTON导致的)
 }
 
 //WDT 中断只有2个32.768kHz的时钟周期，之后系统复位
@@ -1170,20 +949,49 @@ void wdt_config()
 	err_code = nrfx_wdt_channel_alloc(&my_channel_id);
 	APP_ERROR_CHECK(err_code);
 	
+	nrf_gpio_cfg_output(TPL5010_DONE);
+	nrf_gpio_pin_clear(TPL5010_DONE);
+	
 	//开始计数，不可终止，所以该初始化函数最好最后执行
 	nrfx_wdt_enable();
 }
+
+void sensor_init()
+{
+	if(!sensor_state){
+		adc_config();
+		timer_config();
+		ppi_config();
+		sensor_state=true;
+	}
+	
+}
+void sensor_uninit()
+{
+	if(sensor_state){
+	nrf_drv_ppi_uninit();
+	nrfx_timer_uninit(&MY_TIMER);
+	nrfx_saadc_uninit();
+	sensor_state = false;
+	}
+}
+
 /**@brief Application main function.
  */
 int main(void)
 {
     bool erase_bonds;
-
+		
+	
+		nrf_delay_ms(1000);
     // Initialize.
-    uart_init();
+    // uart_init();
     log_init();
     timers_init();
-    buttons_leds_init(&erase_bonds);
+    buttons_leds_init(&erase_bonds); //偷偷的对button进行了gpiote port初始化
+	
+		//feed_tpl5010();
+	
     power_management_init();
     ble_stack_init();
     gap_params_init();
@@ -1193,21 +1001,13 @@ int main(void)
     conn_params_init();
 		
     // Start execution.
-    printf("\r\nUART started.\r\n");
-    NRF_LOG_INFO("Debug logging for UART over RTT started.");
-    advertising_start();
-		
-		adc_config();
-	
-		timer_config();
-	
-		//gpiote_config();
-	
-		ppi_config();
+    //printf("\r\nUART started.\r\n");
+    //NRF_LOG_INFO("Debug logging for UART over RTT started.");
 		
 		app_timer_config();
 		wdt_config();
 	
+		advertising_start();
 		//throughput_test();
 
     // Enter main loop.
