@@ -68,6 +68,7 @@
 #include "app_util_platform.h"
 #include "bsp_btn_ble.h"
 #include "nrf_pwr_mgmt.h"
+#include "nrf_delay.h"
 
 //ADC需要引用的头文件
 #include "nrf_drv_saadc.h"
@@ -105,9 +106,11 @@
 
 #define APP_BLE_OBSERVER_PRIO           3                                           /**< Application's BLE observer priority. You shouldn't need to modify this value. */
 
-#define APP_ADV_INTERVAL                64                                          /**< The advertising interval (in units of 0.625 ms. This value corresponds to 40 ms). */
+#define APP_ADV_FAST_INTERVAL           64                                          /**< The advertising interval (in units of 0.625 ms. This value corresponds to 40 ms). */
+#define APP_ADV_SLOW_INTERVAL           6400                                        /**< The advertising interval (in units of 0.625 ms. This value corresponds to 4s). */
 
-#define APP_ADV_DURATION                18000                                       /**< The advertising duration (180 seconds) in units of 10 milliseconds. */
+#define APP_ADV_FAST_DURATION           2000                                        /**< The advertising duration (20 seconds) in units of 10 milliseconds. */
+#define APP_ADV_SLOW_DURATION           0                                           /**< The advertising duration (WQ seconds) in units of 10 milliseconds. */
 
 #define MIN_CONN_INTERVAL               MSEC_TO_UNITS(20, UNIT_1_25_MS)             /**< Minimum acceptable connection interval (20 ms), Connection interval uses 1.25 ms units. */
 #define MAX_CONN_INTERVAL               MSEC_TO_UNITS(40, UNIT_1_25_MS)             /**< Maximum acceptable connection interval (75 ms), Connection interval uses 1.25 ms units. */
@@ -126,6 +129,9 @@
 #define CHANNEL 4
 #define SAMPLE_BUFFER_LEN SAMPLE_BUFFER_DOTS*CHANNEL
 #define HC 5 																																			/**< 稳态时的缓冲数据长度. */
+
+#define TPL5010_WAKE 24
+#define TPL5010_DONE 14
 
 BLE_NUS_DEF(m_nus, NRF_SDH_BLE_TOTAL_LINK_COUNT);                                   /**< BLE NUS service instance. */
 NRF_BLE_GATT_DEF(m_gatt);                                                           /**< GATT module instance. */
@@ -170,6 +176,7 @@ const nrfx_timer_t MY_TIMER = NRFX_TIMER_INSTANCE(2);
 // 保存申请的喂狗通道
 nrfx_wdt_channel_id my_channel_id;
 APP_TIMER_DEF(wdt_timer_speed);
+//APP_TIMER_DEF(advertising_timer);
 // 保存数据指针用于TX事件
 uint8_t * adc_tx_data;
 uint16_t ave_data[HC][CHANNEL]; //稳态数据保存
@@ -437,9 +444,13 @@ static void on_adv_evt(ble_adv_evt_t ble_adv_evt)
     switch (ble_adv_evt)
     {
         case BLE_ADV_EVT_FAST:
+						NRF_LOG_INFO("FAST MODE");
             err_code = bsp_indication_set(BSP_INDICATE_ADVERTISING);
             APP_ERROR_CHECK(err_code);
             break;
+				case BLE_ADV_EVT_SLOW:
+						NRF_LOG_INFO("SLOW MODE");
+						break;
         case BLE_ADV_EVT_IDLE:
             sleep_mode_enter();
             break;
@@ -720,14 +731,17 @@ static void advertising_init(void)
 
     init.advdata.name_type          = BLE_ADVDATA_FULL_NAME;
     init.advdata.include_appearance = false;
-    init.advdata.flags              = BLE_GAP_ADV_FLAGS_LE_ONLY_LIMITED_DISC_MODE;
+    init.advdata.flags              = BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE;
 
     init.srdata.uuids_complete.uuid_cnt = sizeof(m_adv_uuids) / sizeof(m_adv_uuids[0]);
     init.srdata.uuids_complete.p_uuids  = m_adv_uuids;
 
     init.config.ble_adv_fast_enabled  = true;
-    init.config.ble_adv_fast_interval = APP_ADV_INTERVAL;
-    init.config.ble_adv_fast_timeout  = APP_ADV_DURATION;
+    init.config.ble_adv_fast_interval = APP_ADV_FAST_INTERVAL;
+    init.config.ble_adv_fast_timeout  = APP_ADV_FAST_DURATION;
+		init.config.ble_adv_slow_enabled  = true;
+		init.config.ble_adv_slow_interval = APP_ADV_SLOW_INTERVAL;
+		init.config.ble_adv_slow_timeout	= APP_ADV_SLOW_DURATION;
     init.evt_handler = on_adv_evt;
 
     err_code = ble_advertising_init(&m_advertising, &init);
@@ -738,14 +752,15 @@ static void advertising_init(void)
 
 
 /**@brief Function for initializing buttons and leds.
- *
+ *3
  * @param[out] p_erase_bonds  Will be true if the clear bonding button was pressed to wake the application up.
  */
 static void buttons_leds_init(bool * p_erase_bonds)
 {
     bsp_event_t startup_event;
 
-    uint32_t err_code = bsp_init(BSP_INIT_LEDS | BSP_INIT_BUTTONS, bsp_event_handler);
+    //uint32_t err_code = bsp_init(BSP_INIT_LEDS | BSP_INIT_BUTTONS, bsp_event_handler);
+		uint32_t err_code = bsp_init(BSP_INIT_LEDS, bsp_event_handler);
     APP_ERROR_CHECK(err_code);
 
     err_code = bsp_btn_ble_init(NULL, &startup_event);
@@ -945,8 +960,16 @@ static void wdt_timer_handler(void * p_context)
 	static uint8_t wdt_sec=0;
 	wdt_sec++;
 	nrfx_wdt_channel_feed(my_channel_id);
+	nrf_gpio_pin_toggle(TPL5010_DONE);
 	//NRF_LOG_INFO("FEED DOG:%d",wdt_sec);
 }
+
+//static void advertising_timer_handler(void * p_context)
+//{
+//	// 创造一个间隔发广播的中断函数
+//	NRF_LOG_INFO("ADVERTISING START");
+//	advertising_start();
+//}
 
 void app_timer_config()
 {
@@ -954,6 +977,9 @@ void app_timer_config()
 	  err_code = app_timer_create(&wdt_timer_speed, APP_TIMER_MODE_REPEATED, wdt_timer_handler);
 	  APP_ERROR_CHECK(err_code);
 		APP_ERROR_CHECK(app_timer_start(wdt_timer_speed, APP_TIMER_TICKS(1000),NULL));
+//	err_code = app_timer_create(&advertising_timer, APP_TIMER_MODE_REPEATED, advertising_timer_handler);
+//	APP_ERROR_CHECK(err_code);
+//	APP_ERROR_CHECK(app_timer_start(wdt_timer_speed, APP_TIMER_TICKS(30000),NULL));
 }
 
 //定时器事件回调函数
@@ -1074,16 +1100,16 @@ void saadc_callback(nrf_drv_saadc_evt_t const * p_event)
 			}
 			if (err_code == NRF_SUCCESS)
 			{
-				NRF_LOG_INFO("%d:SUCCESS",m_adc_evt_counter);
+				//NRF_LOG_INFO("%d:SUCCESS",m_adc_evt_counter);
 				m_adv_success_send++;
 			}
 			else
 			{
-				NRF_LOG_INFO("%d:DROP",m_adc_evt_counter);
+				//NRF_LOG_INFO("%d:DROP",m_adc_evt_counter);
 			}
 			if(m_adc_evt_counter==80)
 			{
-				NRF_LOG_INFO("RATE: %d/%d",m_adv_success_send,m_adc_evt_counter);
+				//NRF_LOG_INFO("RATE: %d/%d",m_adv_success_send,m_adc_evt_counter);
 				m_adv_success_send=0;
 				m_adc_evt_counter=0;
 			}
@@ -1120,6 +1146,44 @@ void adc_config()
 	APP_ERROR_CHECK(err_code);
 	err_code=nrfx_saadc_buffer_convert(m_buffer_pool[1],SAMPLE_BUFFER_LEN);
 	APP_ERROR_CHECK(err_code);
+	
+}
+
+void feed_tpl5010()
+{
+		nrf_gpio_pin_set(TPL5010_DONE);
+		nrf_delay_ms(50);
+		nrf_gpio_pin_clear(TPL5010_DONE);
+}
+
+void tpl5010_handler(nrf_drv_gpiote_pin_t pin,nrf_gpiote_polarity_t action)
+{
+	if(pin==TPL5010_WAKE)
+	{
+		feed_tpl5010();
+	}
+}
+
+//TPL5010喂狗
+void tpl5010_gpiote_config()
+{
+	ret_code_t err_code;
+
+	if (!nrf_drv_gpiote_is_init())
+  {
+			err_code = nrf_drv_gpiote_init();
+			APP_ERROR_CHECK(err_code);
+			nrf_drv_gpiote_in_config_t in_config_hitlo = GPIOTE_CONFIG_IN_SENSE_HITOLO(false);
+			in_config_hitlo.pull = NRF_GPIO_PIN_PULLUP;
+			err_code = nrf_drv_gpiote_in_init(TPL5010_WAKE,&in_config_hitlo,tpl5010_handler);
+			APP_ERROR_CHECK(err_code);
+			nrf_drv_gpiote_in_event_enable(TPL5010_WAKE,true);
+  }
+	else
+	{
+			//NRF_LOG_INFO("GPIOTE HAS BEENINITIALIZED!");
+	}
+	
 	
 }
 
@@ -1170,6 +1234,9 @@ void wdt_config()
 	err_code = nrfx_wdt_channel_alloc(&my_channel_id);
 	APP_ERROR_CHECK(err_code);
 	
+	nrf_gpio_cfg_output(TPL5010_DONE);
+	nrf_gpio_pin_clear(TPL5010_DONE);
+	
 	//开始计数，不可终止，所以该初始化函数最好最后执行
 	nrfx_wdt_enable();
 }
@@ -1178,12 +1245,17 @@ void wdt_config()
 int main(void)
 {
     bool erase_bonds;
-
+		
+	
+		nrf_delay_ms(1000);
     // Initialize.
     uart_init();
     log_init();
     timers_init();
-    buttons_leds_init(&erase_bonds);
+    buttons_leds_init(&erase_bonds); //偷偷的对button进行了gpiote port初始化
+	
+		feed_tpl5010();
+	
     power_management_init();
     ble_stack_init();
     gap_params_init();
@@ -1193,21 +1265,21 @@ int main(void)
     conn_params_init();
 		
     // Start execution.
-    printf("\r\nUART started.\r\n");
-    NRF_LOG_INFO("Debug logging for UART over RTT started.");
-    advertising_start();
+    //printf("\r\nUART started.\r\n");
+    //NRF_LOG_INFO("Debug logging for UART over RTT started.");
 		
 		adc_config();
 	
 		timer_config();
 	
-		//gpiote_config();
+		//tpl5010_gpiote_config();
 	
 		ppi_config();
 		
 		app_timer_config();
 		wdt_config();
 	
+		advertising_start();
 		//throughput_test();
 
     // Enter main loop.
