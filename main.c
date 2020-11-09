@@ -125,13 +125,14 @@
 #define UART_TX_BUF_SIZE                256                                         /**< UART TX buffer size. */
 #define UART_RX_BUF_SIZE                256                                         /**< UART RX buffer size. */
 
-#define SAMPLE_BUFFER_DOTS 20
+#define SAMPLE_BUFFER_DOTS 100
 #define CHANNEL 4
 #define SAMPLE_BUFFER_LEN SAMPLE_BUFFER_DOTS*CHANNEL
 #define HC 5 																																			/**< 稳态时的缓冲数据长度. */
 
 #define TPL5010_WAKE 24
 #define TPL5010_DONE 14
+#define CONTROL_VCC 6
 
 BLE_NUS_DEF(m_nus, NRF_SDH_BLE_TOTAL_LINK_COUNT);                                   /**< BLE NUS service instance. */
 NRF_BLE_GATT_DEF(m_gatt);                                                           /**< GATT module instance. */
@@ -1020,12 +1021,12 @@ void timer_config()
 	//nrfx_timer_enable(&MY_TIMER);
 }
 
-void ave(uint16_t* buffer)
+void ave(short* buffer)
 {
-	uint32_t tmp1=0;
-	uint32_t tmp2=0;
-	uint32_t tmp3=0;
-	uint32_t tmp4=0;
+	int tmp1=0;
+	int tmp2=0;
+	int tmp3=0;
+	int tmp4=0;
 	for(int i=0;i<SAMPLE_BUFFER_DOTS;i++)
 	{
 		tmp1 += buffer[i*4];
@@ -1043,40 +1044,44 @@ void ave(uint16_t* buffer)
 		hc_num=0;
 }
 
-void rms(uint16_t* buffer)
+void rms(short* buffer)
 {
-	uint32_t tmp1=0;
-	uint32_t tmp2=0;
-	uint32_t tmp3=0;
-	uint32_t tmp4=0;
+	int tmp1=0;
+	int tmp2=0;
+	int tmp3=0;
+	int tmp4=0;
+	int tmp5=0;
+	int tmp6=0;
+	int tmp7=0;
+	int tmp8=0;
 	for(int i=0;i<SAMPLE_BUFFER_DOTS;i++)
 	{
-		tmp1 += ((uint32_t)buffer[i*4])*((uint32_t)buffer[i*4]);
-		tmp2 += ((uint32_t)buffer[i*4+1])*((uint32_t)buffer[i*4+1]);
-		tmp3 += ((uint32_t)buffer[i*4+2])*((uint32_t)buffer[i*4+2]);
-		tmp4 += ((uint32_t)buffer[i*4+3])*((uint32_t)buffer[i*4+3]);
+		tmp1 += buffer[i*4]*buffer[i*4];
+		tmp2 += buffer[i*4+1]*buffer[i*4+1];
+		tmp3 += buffer[i*4+2]*buffer[i*4+2];
+		tmp4 += buffer[i*4+3]*buffer[i*4+3];
+		tmp5 += buffer[i*4];
+		tmp6 += buffer[i*4+1];
+		tmp7 += buffer[i*4+2];
+		tmp8 += buffer[i*4+3];
 	}
 	// 或者直接取平方均值的9-24位（4096=2^12）(计算得500以下的有效值也才相差0.2)
-	tmp1 = tmp1/SAMPLE_BUFFER_DOTS;
-	tmp1 = tmp1>>8;
-	tmp2 = tmp2/SAMPLE_BUFFER_DOTS;
-	tmp2 = tmp2>>8;
-	tmp3 = tmp3/SAMPLE_BUFFER_DOTS;
-	tmp3 = tmp3>>8;
-	tmp4 = tmp4/SAMPLE_BUFFER_DOTS;
-	tmp4 = tmp4>>8;
-	ave_data[hc_num][0] =(uint16_t)tmp1;
-	ave_data[hc_num][1] =(uint16_t)tmp2;
-	ave_data[hc_num][2] =(uint16_t)tmp3;
-	ave_data[hc_num][3] =(uint16_t)tmp4;
 //	double temp1 =tmp1/SAMPLE_BUFFER_DOTS;
 //	double temp2 =tmp2/SAMPLE_BUFFER_DOTS;
 //	double temp3 =tmp3/SAMPLE_BUFFER_DOTS;
 //	double temp4 =tmp4/SAMPLE_BUFFER_DOTS;
-//	ave_data[hc_num][0] =(uint16_t)((int)(sqrt(temp1)));
-//	ave_data[hc_num][1] =(uint16_t)((int)(sqrt(temp2)));
-//	ave_data[hc_num][2] =(uint16_t)((int)(sqrt(temp3)));
-//	ave_data[hc_num][3] =(uint16_t)((int)(sqrt(temp4)));
+	double temp1 =sqrt(tmp1-tmp5*tmp5);
+	double temp2 =sqrt(tmp2-tmp6*tmp6);
+	double temp3 =sqrt(tmp3-tmp7*tmp7);
+	double temp4 =sqrt(tmp4-tmp8*tmp8);
+	ave_data[hc_num][0] =(uint16_t)temp1;
+	ave_data[hc_num][1] =(uint16_t)temp2;
+	ave_data[hc_num][2] =(uint16_t)temp3;
+	ave_data[hc_num][3] =(uint16_t)temp4;
+//	ave_data[hc_num][0] =(uint16_t)(tmp1-tmp5*tmp5);
+//	ave_data[hc_num][1] =(uint16_t)(tmp2-tmp6*tmp6);
+//	ave_data[hc_num][2] =(uint16_t)(tmp3-tmp7*tmp7);
+//	ave_data[hc_num][3] =(uint16_t)(tmp4-tmp8*tmp8);
 	if(hc_num < HC)
 		hc_num++;
 	else
@@ -1093,8 +1098,8 @@ void saadc_callback(nrf_drv_saadc_evt_t const * p_event)
 		APP_ERROR_CHECK(nrfx_saadc_buffer_convert(p_event->data.done.p_buffer,SAMPLE_BUFFER_LEN));
 		
 		//NRF_LOG_INFO("SAADC");
-		//ave((uint16_t*)p_event->data.done.p_buffer); 直流磁场API
-		rms((uint16_t*)p_event->data.done.p_buffer);
+		ave((short*)p_event->data.done.p_buffer); //直流磁场API
+		//rms((short*)p_event->data.done.p_buffer);
 		if(hc_num==0){
 			m_adc_evt_counter++;
 			length=MIN(m_ble_nus_max_data_len,HC*CHANNEL*2);
@@ -1122,16 +1127,18 @@ void saadc_callback(nrf_drv_saadc_evt_t const * p_event)
 		}
 	}
 }
-
+	
 void adc_config()
 {
 	ret_code_t err_code=NRF_SUCCESS;
 	
 	//ADC通道配置结构体
-	nrf_saadc_channel_config_t channel_config = NRFX_SAADC_DEFAULT_CHANNEL_CONFIG_DIFFERENTIAL(NRF_SAADC_INPUT_AIN0,NRF_SAADC_INPUT_AIN1);
+	//nrf_saadc_channel_config_t channel_config = NRFX_SAADC_DEFAULT_CHANNEL_CONFIG_DIFFERENTIAL(NRF_SAADC_INPUT_AIN1,NRF_SAADC_INPUT_AIN0);
+	nrf_saadc_channel_config_t channel_config = NRFX_SAADC_DEFAULT_CHANNEL_CONFIG_DIFFERENTIAL(NRF_SAADC_INPUT_VDD,NRF_SAADC_INPUT_AIN3);
 	nrf_saadc_channel_config_t channel_config2 = NRFX_SAADC_DEFAULT_CHANNEL_CONFIG_DIFFERENTIAL(NRF_SAADC_INPUT_AIN3,NRF_SAADC_INPUT_AIN2);
-	nrf_saadc_channel_config_t channel_config3 = NRFX_SAADC_DEFAULT_CHANNEL_CONFIG_DIFFERENTIAL(NRF_SAADC_INPUT_AIN4,NRF_SAADC_INPUT_AIN5);
-	nrf_saadc_channel_config_t channel_config4 = NRFX_SAADC_DEFAULT_CHANNEL_CONFIG_DIFFERENTIAL(NRF_SAADC_INPUT_AIN7,NRF_SAADC_INPUT_AIN6);
+	nrf_saadc_channel_config_t channel_config3 = NRFX_SAADC_DEFAULT_CHANNEL_CONFIG_DIFFERENTIAL(NRF_SAADC_INPUT_AIN5,NRF_SAADC_INPUT_AIN4);
+	//nrf_saadc_channel_config_t channel_config4 = NRFX_SAADC_DEFAULT_CHANNEL_CONFIG_DIFFERENTIAL(NRF_SAADC_INPUT_AIN6,NRF_SAADC_INPUT_AIN7);
+	nrf_saadc_channel_config_t channel_config4 = NRFX_SAADC_DEFAULT_CHANNEL_CONFIG_SE(NRF_SAADC_INPUT_VDD);
 	//初始化SAADC，注册事件回调函数 
 	err_code=nrf_drv_saadc_init(NULL,saadc_callback);
 	APP_ERROR_CHECK(err_code);
@@ -1267,6 +1274,9 @@ void wdt_config()
 	nrf_gpio_cfg_output(TPL5010_DONE);
 	nrf_gpio_pin_clear(TPL5010_DONE);
 	
+	nrf_gpio_cfg_output(CONTROL_VCC);
+	nrf_gpio_pin_set(CONTROL_VCC);
+	
 	//开始计数，不可终止，所以该初始化函数最好最后执行
 	nrfx_wdt_enable();
 }
@@ -1305,7 +1315,15 @@ int main(void)
 		advertising_start();
 		//throughput_test();
 
-		//sensor_init();
+
+
+//		sensor_init();
+//		//使能PPI通道
+//		nrfx_timer_enable(&MY_TIMER);
+//		APP_ERROR_CHECK(nrfx_ppi_channel_enable(my_ppi_channel));		
+		
+		
+		
 		//sensor_uninit();
 
     // Enter main loop.
